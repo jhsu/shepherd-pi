@@ -38,6 +38,14 @@ KIND_LABEL = {
 }
 
 
+def is_within(cwd: str, root: str) -> bool:
+    """True if the agent's cwd is inside (or equal to) the shepherd root dir."""
+    if not cwd or not root:
+        return False
+    r = root.rstrip("/")
+    return cwd == r or cwd.startswith(r + os.sep)
+
+
 def slug_cwd(cwd: str) -> str:
     """Map an agent cwd to its pi session directory name."""
     return "--" + cwd.strip("/").replace("/", "-") + "--"
@@ -192,6 +200,15 @@ def main():
         return 1
 
     agents = (data.get("result") or {}).get("agents", [])
+
+    # Exclude the shepherd-pi agent(s): pi agents running inside this shepherd repo are
+    # the orchestrator itself (or its clones). Skip them so we never show/report the self
+    # as a worker. Base directory is inferred from this script's own location.
+    shepherd_root = os.path.realpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+    agents = [
+        a for a in agents
+        if not is_within(a.get("cwd", ""), shepherd_root)
+    ]
 
     if args.filter:
         flt = args.filter.lower()

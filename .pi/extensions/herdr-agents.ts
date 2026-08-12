@@ -25,7 +25,8 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ThemeColor } from "@earendil-works/pi-coding-agent";
 
 type HerdrAgent = {
@@ -55,6 +56,22 @@ function runHerdr(args: string[]): Promise<string> {
 			resolve(stdout);
 		});
 	});
+}
+
+/** Project root for whichever repo hosts this extension (the shepherd orchestrator). */
+function shepherdRoot(): string {
+	const here = fileURLToPath(import.meta.url);
+	if (here.includes(`${sep}.pi${sep}extensions${sep}`)) {
+		return here.split(`${sep}.pi${sep}extensions`)[0];
+	}
+	return process.cwd();
+}
+
+/** True when an agent lives inside the shepherd orchestrator repo (i.e. is another \"self\"). */
+function isWithinShepherd(cwd: string, root: string): boolean {
+	if (!cwd || !root) return false;
+	const r = root.replace(/[\/]+$/, "");
+	return cwd === r || cwd.startsWith(r + sep);
 }
 
 async function listAgents(): Promise<HerdrAgent[]> {
@@ -154,12 +171,14 @@ async function buildView(ctx: ExtensionCommandContext): Promise<{
 
 	const records = await readTaskLog();
 	const selfPane = process.env.HERDR_PANE_ID;
+	const selfDir = shepherdRoot(); // exclude the shepherd orchestrator's own repo so we never dispatch to "shepherd-pi"
 
 	const rows: Array<{ target: string; label: string; state: string; task: string }> = [];
 	const agentByTarget: Record<string, HerdrAgent> = {};
 
 	for (const agent of agents) {
-		if (selfPane && agent.pane_id === selfPane) continue; // skip the orchestrator itself
+		if (selfPane && agent.pane_id === selfPane) continue; // skip the orchestrator's own pane
+		if (isWithinShepherd(agent.cwd, selfDir)) continue; // skip shepherd-pi agents (the orchestrator itself / its clones)
 		const target = agent.pane_id; // unique, always usable as a prompt target
 		const logged = latestTaskFor(records, agent, target);
 

@@ -25,7 +25,7 @@ worker can act on it immediately without asking for context.
 The parent orchestrator passes you a JSON bundle with exactly these fields:
 
 - `target` — the Herdr **pane id** the instruction is addressed to (e.g. `w14:p1`),
-  and the compact agent mention (`@herdr: <kind>#<pane> [<state>]`). **This is the link
+  and the compact agent mention (`@herdr: <kind>#<pane>`). **This is the link
   to the target conversation history.**
 - `instruction` — the user's raw request (the text after the `@herdr:` mention).
 

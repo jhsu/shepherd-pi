@@ -230,8 +230,9 @@ export default function herdrAgentsExtension(pi: ExtensionAPI) {
 			// Insert the single-line mention tag into the normal pi editor so the user can
 			// append their instruction right after it. Any previous text in the input bar is
 			// preserved, and the tag is separated so the orchestrator sees it as a dispatchable
-			// "@herdr: <kind>#<pane> [state] <instruction>" message (see AGENTS.md §4a).
-			const tag = `@herdr: ${agent?.agent ?? "?"}#${row.target} [${row.state}]`;
+			// "@herdr: <kind>#<pane> <instruction>" message (see AGENTS.md §4a). The state is
+			// intentionally left out of the tag — it's a snapshot, not part of the address.
+			const tag = `@herdr: ${agent?.agent ?? "?"}#${row.target}`;
 			const existing = ctx.ui.getEditorText();
 			ctx.ui.setEditorText(existing ? existing + " " + tag : tag);
 			ctx.ui.notify("Agent tag inserted into input; append your instruction and send.", "info");

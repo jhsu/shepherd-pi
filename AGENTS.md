@@ -32,7 +32,7 @@ rewrite, and hands you back only a compact `{ refinedPrompt, summary }`.
 Keep it lean and non-blocking. Order of operations:
 1. Extract the `#<pane>` target and the trailing user instruction.
 2. **Delegate the rewrite** — one subagent launch, bundled payload = the pane link
-   (`@herdr: <kind>#<pane> [<state>]`) + the user `instruction`:
+   (`@herdr: <kind>#<pane>`) + the user `instruction`:
 
    ```text
    subagent({
@@ -204,7 +204,7 @@ you select an agent, drops a **single-line mention tag** into the editor. Recogn
 shorthand: it is a compact, unambiguously-an-agent reference to a specific herdr pane.
 
 ```
-@herdr: pi#w14:p1 [working]
+@herdr: pi#w14:p1
 ```
 
 Read it left to right:
@@ -215,8 +215,6 @@ be converted into a `herdr agent prompt` to the tagged pane, never treated as li
 for the orchestrator to ignore or echo.
 - **`<kind>#<pane>`** — e.g. `pi#w14:p1`. The `#<pane>` (after the kind) is the**prompt target**. When the worker has a unique agent name (per §3b), that name appears in place
 of the kind, e.g. `reviewer#w14:p1`.
-- **`[state]`** — the lifecycle state (`idle` / `done` / `working` / `blocked` / `unknown`).
-  Context for how to send (e.g. gate on `blocked`, wait if `working`); not part of the payload.
 
 ## How to dispatch an `@herdr:` instruction
 
@@ -229,7 +227,7 @@ the refiner does, in its own context.
 Example — user writes:
 
 ```
-@herdr: pi#w14:p1 [working] Add a retry wrapper around the network call.
+@herdr: pi#w14:p1 Add a retry wrapper around the network call.
 ```
 
 You launch the refiner with the pane link + request, get back its JSON, and dispatch:
@@ -282,7 +280,7 @@ Use `herdr agent explain <target>` when the lifecycle state is `unknown` to unde
 
 When reporting an agent to the user (or referencing one in a follow-up instruction), tag it
 with the compact `@herdr:` mention format from §4a so the handle is unambiguous and
-immediately targetable, e.g. `reviewer is `@herdr: pi#w14:p1 [working]` and nits the diff`.
+immediately targetable, e.g. `reviewer is `@herdr: pi#w14:p1` and nits the diff`.
 
 ## 6. Handling interaction with an agent (blocked / approvals)
 

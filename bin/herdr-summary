@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""
+herdr-summary — summarize the conversations of all running herdr AI agents.
+
+For each agent reported by `herdr agent list`, this finds the pi session transcript
+for that agent's working directory (under ~/.pi/agent/sessions/<slugged-cwd>/), reads
+the most recent session JSONL, and prints a concise per-agent summary of the
+conversation: the user prompts, the agent's key responses, and the tools it used.
+
+Usage:
+  herdr-summary               # all agents
+  herdr-summary w13           # only workspace w13
+  herdr-summary tilt          # only agents whose cwd path contains 'tilt'
+  herdr-summary --json        # machine-readable output
+  herdr-summary --max-lines N # tail of session to focus on (default: whole session)
+"""
+
+from __future__ import annotations
+
+import argparse
+import glob
+import json
+import os
+import subprocess
+import sys
+
+SESSIONS_ROOT = os.path.expanduser("~/.pi/agent/sessions")
+
+# Human label for each agent kind.
+KIND_LABEL = {
+    "pi": "pi",
+    "claude": "claude",
+    "codex": "codex",
+    "gemini": "gemini",
+    "cursor": "cursor",
+    "devin": "devin",
+    "opencode": "opencode",
+}
+
+
+def slug_cwd(cwd: str) -> str:
+    """Map an agent cwd to its pi session directory name."""
+    return "--" + cwd.strip("/").replace("/", "-") + "--"
+
+
+def latest_session(cwd: str):
+    """Return path to the most recent pi session JSONL for a cwd, or None."""
+    d = os.path.join(SESSIONS_ROOT, slug_cwd(cwd))
+    if not os.path.isdir(d):
+        return None
+    files = glob.glob(os.path.join(d, "*.jsonl"))
+    if not files:
+        return None
+    files.sort(key=os.path.getmtime, reverse=True)
+    return files[0]
+
+
+def parse_session(path: str):
+    """Extract a lightweight list of events from a pi session JSONL.
+
+    Returns (headers, events) where events is a list of dicts:
+      {type:'user'|'assistant'|'tool'|'result', text, first_line?}
+    """
+    events = []
+    if not path or not os.path.isfile(path):
+        return [], events
+    for line in open(path, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        t = rec.get("type")
+        if t == "session":
+            continue
+        if t == "message":
+            m = rec.get("message", {})
+            role = m.get("role")
+            for c in m.get("content", []):
+                if not isinstance(c, dict):
+                    continue
+                ctype = c.get("type")
+                if ctype == "text":
+                    text = (c.get("text") or "").strip()
+                    if text:
+                        events.append({"type": role, "text": text})
+                elif ctype == "toolCall":
+                    name = (c.get("name") or "").strip()
+                    args = c.get("args") or ""
+                    if isinstance(args, dict):
+                        args = json.dumps(args)
+                    events.append({"type": "tool", "name": name, "text": str(args)})
+        elif t == "tool_result" or t == "toolResult":
+            pass  # tool results are noisy; skip by default
+    return [], events
+
+
+def first_lines(text: str, n: int = 2):
+    return [l.strip() for l in text.strip().splitlines() if l.strip()][:n]
+
+
+def summarize_agent(agent: dict, max_events: int | None = None, old_ratio: float = 0.35):
+    """Return a structured summary dict for a single agent."""
+    cwd = agent.get("cwd", "")
+    pane = agent.get("pane_id", "")
+    ws = agent.get("workspace_id", "")
+    kind = agent.get("agent", "pi")
+    state = agent.get("agent_status", agent.get("state", "unknown"))
+
+    session = latest_session(cwd)
+    _, events = parse_session(session)
+
+    if max_events and len(events) > max_events:
+        # focus on the recent tail + a small older sample for context
+        tail = events[-max_events:]
+        sample = max(1, int(max_events * old_ratio))
+        older = events[:sample]
+        events = older + [{"type": "...", "text": f"[{sample} older events omitted] — ..."}] + tail
+
+    user_prompts = [e for e in events if e["type"] == "user"]
+    last_assistant = []
+    for e in reversed(events):
+        if e["type"] == "assistant":
+            last_assistant = first_lines(e["text"], 3)
+            break
+
+    tools_used = []
+    for e in events:
+        if e["type"] == "tool" and e.get("name") not in tools_used:
+            tools_used.append(e["name"])
+
+    recent_conv = []
+    for e in events:
+        if e["type"] in ("user",):
+            t = " ".join(first_lines(e["text"], 1))
+            recent_conv.append(t)
+        elif e["type"] == "assistant":
+            t = " ".join(first_lines(e["text"], 1))
+            recent_conv.append(t)
+        elif e["type"] == "...":
+            recent_conv.append(e["text"])
+
+    return {
+        "kind": kind,
+        "cwd": cwd,
+        "workspace": ws,
+        "pane": pane,
+        "state": state,
+        "headline": recent_conv[0] if recent_conv else None,
+        "last_user": user_prompts[-1]["text"] if user_prompts else None,
+        "last_turn_text": " ".join(last_assistant) if last_assistant else None,
+        "tools": tools_used,
+        "session_file": session,
+        "recent_turns": recent_conv,
+    }
+
+
+def fmt_table(rows):
+    """Render rows as a simple aligned table (list of lists of str)."""
+    if not rows:
+        return ""
+    widths = [max(len(str(r[i])) for r in rows) for i in range(len(rows[0]))]
+    make = lambda r: "  ".join(str(x).ljust(w) for x, w in zip(r, widths)).rstrip()
+    sep = "  ".join("-" * w for w in widths)
+    return "\n".join([make(rows[0]), sep] + [make(r) for r in rows[1:]])
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("filter", nargs="?", help="workspace (e.g. w13) or substring of cwd path")
+    ap.add_argument("--json", action="store_true", help="output raw JSON")
+    ap.add_argument("--list-only", action="store_true", help="only list agents, no conversation")
+    ap.add_argument("--max-events", type=int, default=40, help="recent events to show per agent")
+    ap.add_argument("--all-events", action="store_true", help="show entire conversation (no tail truncation)")
+    ap.add_argument("--herdr", default="herdr", help="herdr binary path")
+    args = ap.parse_args()
+
+    try:
+        out = subprocess.run(
+            [args.herdr, "agent", "list"], capture_output=True, text=True, check=True
+        ).stdout
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"error: could not run `herdr agent list`: {e}", file=sys.stderr)
+        return 1
+
+    try:
+        data = json.loads(out)
+    except json.JSONDecodeError as e:
+        print(f"error: unexpected `herdr agent list` output: {e}", file=sys.stderr)
+        return 1
+
+    agents = (data.get("result") or {}).get("agents", [])
+
+    if args.filter:
+        flt = args.filter.lower()
+        agents = [
+            a for a in agents
+            if flt in (a.get("workspace_id", "")).lower()
+            or flt in (a.get("cwd", "")).lower()
+            or flt in (a.get("pane_id", "")).lower()
+        ]
+
+    if args.list_only:
+        rows = [["ws", "pane", "kind", "state", "cwd"]]
+        for a in agents:
+            rows.append([
+                a.get("workspace_id", ""),
+                a.get("pane_id", ""),
+                a.get("agent", "?"),
+                a.get("agent_status", "?"),
+                a.get("cwd", ""),
+            ])
+        print(fmt_table(rows))
+        print(f"\n{len(agents)} agent(s)")
+        return 0
+
+    summaries = []
+    for a in agents:
+        s = summarize_agent(a, max_events=None if args.all_events else args.max_events)
+        summaries.append(s)
+
+    if args.json:
+        print(json.dumps(summaries, indent=2, default=str))
+        return 0
+
+    # Human-readable report
+    for s in summaries:
+        print("=" * 88)
+        print(f"{s['kind']}  {s['pane']}  [{s['state']}]  ws={s['workspace']}")
+        print(f"  cwd : {s['cwd']}")
+        if s["last_user"]:
+            print(f"  last request : {' '.join(first_lines(s['last_user'], 1))}")
+        if s["last_turn_text"]:
+            print(f"  last reply   : {s['last_turn_text']}")
+        print(f"  tools used   : {', '.join(s['tools']) or '(none in recent tail)'}")
+        if s["session_file"]:
+            print(f"  session      : {s['session_file']}")
+        else:
+            print("  session      : (none found)")
+        # recent conversation, condensed
+        if s["recent_turns"]:
+            print("  conversation :")
+            for t in s["recent_turns"]:
+                preview = " ".join(str(t).split())
+                preview = preview if len(preview) <= 160 else preview[:157] + "..."
+                print(f"      · {preview}")
+        print()
+
+    if not summaries:
+        print("No agents found matching filter.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

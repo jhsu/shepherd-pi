@@ -20,35 +20,23 @@ Shepherd provides the system prompt, CLI tools, pi extensions, and subagent defi
 - **Python 3** — for `herdr-summary`
 - **Node.js** — for the pi extension (pi loads it via its extension system)
 
-## Setup
-
-### 1. Clone into your working directory
+## Install
 
 ```bash
-git clone https://github.com/<you>/shepherd.git ~/code/shepherd
-cd ~/code/shepherd
+curl -fsSL https://raw.githubusercontent.com/jhsu/shepherd-pi/main/install.sh | bash
 ```
 
-### 2. Start the orchestrator
+This clones shepherd into `~/.shepherd`, creates `shepherd-pi` in `~/.local/bin`, and installs the `/agents` pi extension globally. Re-run to update.
 
-Open a Herdr workspace, then in a pane start pi with the shepherd `AGENTS.md` as its project context:
+### Start the orchestrator
+
+Open a Herdr workspace, then run:
 
 ```bash
-cd ~/code/shepherd
-pi
+shepherd-pi
 ```
 
-Pi reads `AGENTS.md` from the current directory and assumes the orchestrator role. `herdr-summary` is available as `./bin/herdr-summary` from within the project. Verify it's working by asking for a status check — pi should confirm `HERDR_ENV=1` and list any running agents.
-
-### 3. (Optional) Install the extension globally
-
-The `/agents` extension ships project-locally in `.pi/extensions/`. To use it across projects without cloning shepherd into each one, copy or symlink it into the global extension directory:
-
-```bash
-ln -s "$(pwd)/.pi/extensions/herdr-agents.ts" ~/.pi/agent/extensions/herdr-agents.ts
-```
-
-Then reload pi with `/reload`.
+This starts pi in the shepherd project directory where it reads `AGENTS.md` and assumes the orchestrator role. `herdr-summary` is available on PATH within the session. Verify it's working by asking for a status check — pi should confirm `HERDR_ENV=1` and list any running agents.
 
 ## Usage
 

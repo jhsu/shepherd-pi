@@ -3,7 +3,7 @@
 # install.sh — install Shepherd (Herdr orchestrator for pi)
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/<you>/shepherd/main/install.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/jhsu/shepherd-pi/main/install.sh | bash
 #   # or:
 #   bash install.sh
 #
@@ -19,7 +19,7 @@ set -euo pipefail
 
 SHEPHERD_DIR="${SHEPHERD_DIR:-$HOME/.shepherd}"
 BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
-REPO_URL="${REPO_URL:-https://github.com/earendil-works/shepherd.git}"
+REPO_URL="${REPO_URL:-https://github.com/jhsu/shepherd-pi.git}"
 BRANCH="${BRANCH:-main}"
 
 info()  { printf "\033[1;34m[shepherd]\033[0m %s\n" "$*"; }

@@ -32,21 +32,29 @@ rewrite, and hands you back only a compact `{ refinedPrompt, summary }`.
 Keep it lean and non-blocking. Order of operations:
 1. Extract the `#<pane>` target and the trailing user instruction.
 2. **Delegate the rewrite** — one subagent launch, bundled payload = the pane link
-   (`@herdr: <kind>#<pane>`) + the user `instruction`:
+   (`@herdr: <kind>#<pane>`) + the user `instruction`. If the follow-up maps to a
+   live fleet-ledger entry under `~/.herdr-ledger` (this instruction extends or
+   corrects work already recorded there), also pass that entry's `taskId` so the
+   refiner can fold the recorded title/body/state in:
 
    ```text
    subagent({
      workflowScript: `return runs.run("refine-<pane>", {
        agent: "prompt-refiner",
        context: "fresh",
-       task: JSON.stringify({ target: "<pane>", instruction: "<user text>" })
+       task: JSON.stringify({ target: "<pane>", instruction: "<user text>", taskId: "TODO-<hex>" })
      })`
    })
    ```
 
-   The refiner reads `herdr agent read "<pane>"` itself and returns `refinedPrompt` +
-   `summary`. (If for any reason the subagent is unavailable, fall back to doing the
-   rewrite inline — see the §0a fallback note below.)
+   `taskId` is **optional** — omit it when the instruction is unrelated to any known
+   ledger task. To find the relevant entry, run `ledger list` (or read
+   `~/.herdr-ledger/*.md`) and match the pane id/worker the mention targets.
+
+   The refiner reads `herdr agent read "<pane>"` itself (and, when you passed
+   `taskId`, the ledger entry) and returns `refinedPrompt` + `summary`. (If for any
+   reason the subagent is unavailable, fall back to doing the rewrite inline — see
+   the §0a fallback note below.)
 3. **Dispatch the `refinedPrompt`**: `herdr agent prompt "<pane>" "<refined>"` — fire-and-
    forget, async. Do not `--wait` for completion; a brief `--wait --timeout 30000` just to
    confirm it started is fine, then move on.
@@ -180,6 +188,11 @@ handshake, not the task.
 ~5 seconds or Herdr returns `agent_prompt_stalled`.
 - Back-to-back dispatches to different agents are all fire-and-forget; fan them out without
 collecting synchronously. Recipe A shows the async fan-out pattern.
+- **Keep a dispatch ledger** (the `fleet-ledger` extension, `~/.herdr-ledger`): when you dispatch
+(or on receipt of an `@herdr:` instruction), create a `ledger` entry for the task and assign it
+to the worker, then `set-state working → done|failed` as it progresses. The `/agents` dashboard
+reads this ledger as the deterministic "what is each worker tasked to do" (falling back to a
+transcript guess when no entry exists). This gives you a crash-proof record without trial calls.
 
 Send a prompt to several workers in parallel; they run independently and we do not block
 (or, if we only want to confirm each started, use a short handshake timeout):
@@ -236,10 +249,16 @@ You launch the refiner with the pane link + request, get back its JSON, and disp
 subagent({ workflowScript: `return runs.run("refine-w14:p1", {
   agent: "prompt-refiner", context: "fresh",
   task: JSON.stringify({ target: "w14:p1",
-                         instruction: "Add a retry wrapper around the network call." })
+                         instruction: "Add a retry wrapper around the network call.",
+                         taskId: "TODO-a5c82cf5"   // optional: include when this extends/corrects a ledger task
+                       })
 })` })
 # refiner returns, e.g.:  { refinedPrompt: "...", summary: "Target was refactoring src/client.ts …" }
 ```
+
+The optional `taskId` names a live `~/.herdr-ledger` entry the instruction continues; the
+refiner reads that entry (title/body/state) and folds it into the anchoring context, so a
+follow-up is grounded in the recorded dispatch intent, not only the transcript tail.
 
 ```bash
 herdr agent prompt "w14:p1" "<refinedPrompt>"   # dispatch the refiner's prompt — do NOT hold for completion
@@ -386,6 +405,13 @@ herdr agent prompt perf-auth  "Audit this change for perf regressions."
 herdr agent prompt sec-auth   "Audit this change for security issues."
 # (target can be a worker name or a pane id; if only confirmation-of-start is wanted, add
 #  `--wait --timeout 30000` — just the acceptance handshake, never task completion)
+
+# If you want a durable dispatch record, log each to the fleet ledger (~/.herdr-ledger) via the
+# `ledger` tool:
+#   ledger create title="Review the current diff" worker=reviewer kind=pi
+#   ledger create title="Audit this change for perf regressions" worker=perf-auth kind=pi
+#   ledger create title="Audit this change for security issues" worker=sec-auth kind=pi
+# Then set state as they report (ledger set-state id=TODO-<hex> state=working|done|failed).
 ```
 
 Then poll the transcripts into a shared summary when the agents settle (don't hold our turn

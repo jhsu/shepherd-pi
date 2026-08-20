@@ -23,11 +23,13 @@
  */
 
 import { execFile } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { ExtensionAPI, ExtensionCommandContext, ThemeColor } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader } from "@earendil-works/pi-coding-agent";
+import type { OverlayHandle } from "@earendil-works/pi-tui";
 
 type HerdrAgent = {
 	agent: string; // kind, e.g. "pi", "codex"
@@ -45,6 +47,67 @@ type HerdrAgent = {
 };
 
 type TaskRecord = { at?: number; target?: string; pane_id?: string; task?: string };
+
+// ---------------------------------------------------------------------------
+// Fleet ledger integration (fleet-ledger.ts shared board at ~/.herdr-ledger)
+// ---------------------------------------------------------------------------
+
+type LedgerTask = {
+	id: string;
+	title: string;
+	state: string; // open | assigned | working | blocked | done | failed | cancelled
+	worker: string | null; // pane id or agent name (prompt target)
+	kind: string | null;
+};
+
+/**
+ * Read the shared fleet-ledger board (~/.herdr-ledger, or HERDR_LEDGER_DIR).
+ * Returns active (non-closed) tasks. The ledger is the deterministic source of
+ * "what is each worker tasked to do", preferred over the jsonl log and the
+ * transcript-guess.
+ */
+async function readActiveLedgerTasks(): Promise<LedgerTask[]> {
+	const dir = process.env.HERDR_LEDGER_DIR ||
+		process.env.HERDR_TASK_LOG?.replace(/\.jsonl$/, "") ||
+		join(homedir(), ".herdr-ledger");
+	const out: LedgerTask[] = [];
+	let names: string[] = [];
+	try {
+		names = await readdir(dir);
+	} catch {
+		return out;
+	}
+	for (const name of names) {
+		if (!name.endsWith(".md")) continue;
+		const id = name.slice(0, -3);
+		if (!/^[0-9a-f]{8}$/i.test(id)) continue;
+		try {
+			const content = await readFile(join(dir, name), "utf8");
+			const [frontRaw] = content.split(/\n\n/);
+			const front = JSON.parse(frontRaw) as Partial<LedgerTask & { created_at?: string }>;
+			const state = front.state || "open";
+			const closed = state === "done" || state === "failed" || state === "cancelled";
+			if (closed) continue;
+			out.push({
+				id,
+				title: front.title || "(untitled)",
+				state,
+				worker: front.worker || null,
+				kind: front.kind || null,
+			});
+		} catch {
+			// ignore unreadable ledger entry
+		}
+	}
+	return out;
+}
+
+/** Latest active ledger task assigned to a worker (matches pane_id or agent name). */
+function latestLedgerTaskFor(tasks: LedgerTask[], agent: HerdrAgent): LedgerTask | undefined {
+	const byPane = tasks.filter((t) => t.worker && t.worker === agent.pane_id);
+	if (byPane.length) return byPane[byPane.length - 1];
+	return tasks.filter((t) => t.worker && t.worker === agent.agent).pop();
+}
 
 function runHerdr(args: string[]): Promise<string> {
 	return new Promise((resolve, reject) => {
@@ -170,6 +233,7 @@ async function buildView(ctx: ExtensionCommandContext): Promise<{
 	if (agents.length === 0) throw new Error("No agents detected in the current herdr session.");
 
 	const records = await readTaskLog();
+	const ledgerTasks = await readActiveLedgerTasks();
 	const selfPane = process.env.HERDR_PANE_ID;
 	const selfDir = shepherdRoot(); // exclude the shepherd orchestrator's own repo so we never dispatch to "shepherd-pi"
 
@@ -181,8 +245,15 @@ async function buildView(ctx: ExtensionCommandContext): Promise<{
 		if (isWithinShepherd(agent.cwd, selfDir)) continue; // skip shepherd-pi agents (the orchestrator itself / its clones)
 		const target = agent.pane_id; // unique, always usable as a prompt target
 		const logged = latestTaskFor(records, agent, target);
+		const ledgerTask = latestLedgerTaskFor(ledgerTasks, agent);
 
-		let task = logged?.task;
+		// Prefer the deterministic fleet ledger entry, then the jsonl log, then a
+		// best-effort guess from the transcript tail.
+		let task: string | undefined;
+		if (ledgerTask) {
+			task = `TODO-${ledgerTask.id} [${ledgerTask.state}] ${ledgerTask.title}`;
+		}
+		if (!task) task = logged?.task;
 		if (!task) {
 			task = extractTask(await readTranscript(target, 120));
 		}
@@ -198,8 +269,19 @@ async function buildView(ctx: ExtensionCommandContext): Promise<{
 export default function herdrAgentsExtension(pi: ExtensionAPI) {
 	const handler = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
 		void args;
+		const overlayRef: { current: OverlayHandle | null } = { current: null }; // set while the loader overlay is shown
 		try {
+			// Show an animated loader overlay while we fetch the fleet from herdr and
+			// resolve each worker's recent activity (agent list + transcript reads).
+			if (ctx.hasUI) {
+				void ctx.ui.custom(
+					(tui, theme) => new BorderedLoader(tui, theme, "Querying herdr fleet…"),
+					{ overlay: true, onHandle: (h) => { overlayRef.current = h; } },
+				);
+			}
+
 			const { rows, agentByTarget } = await buildView(ctx);
+			overlayRef.current?.hide(); // hide the loader before rendering the picker / result
 
 			if (rows.length === 0) {
 				ctx.ui.notify("No worker agents found (excluding the orchestrator itself).", "info");
@@ -237,6 +319,7 @@ export default function herdrAgentsExtension(pi: ExtensionAPI) {
 			ctx.ui.setEditorText(existing ? existing + " " + tag : tag);
 			ctx.ui.notify("Agent tag inserted into input; append your instruction and send.", "info");
 		} catch (err) {
+			overlayRef.current?.hide(); // ensure the loader is dismissed even on failure
 			const msg = err instanceof Error ? err.message : String(err);
 			ctx.ui.notify(`Herdr status error: ${msg}`, "error");
 		}
